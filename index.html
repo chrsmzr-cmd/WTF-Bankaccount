@@ -96,6 +96,14 @@ h3{font-size:15px;margin:0 0 6px}
 .seg > div{height:100%}
 .seg > div:first-child{border-radius:4px 0 0 4px}
 .seg > div:last-child{border-radius:0 4px 4px 0}
+.bud{padding:10px 0;border-top:1px solid var(--border)}
+.bud:first-child{border-top:0;padding-top:2px}
+.bud .top{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.bud .top b{white-space:nowrap}
+.bud .top .n{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bud .progress{margin:6px 0 3px}
+.chipsep{width:100%;font-size:12px;color:var(--muted);font-weight:600;margin:6px 0 0}
+.preview{font-size:14px;margin-top:6px;min-height:20px}
 .progress{height:10px;background:var(--grid);border-radius:999px;overflow:hidden;margin:8px 0 4px}
 .progress > div{height:100%;background:var(--s1);border-radius:999px}
 .progress > div.over{background:var(--crit)}
@@ -229,7 +237,7 @@ const DEFAULT_CATS = [
 
 /* ---------- state ---------- */
 let docs = {};            // 'plan' and 'tx-YYYY-MM'
-const ui = { month: TODAY, sim: {}, bookCat: null, draft: {amount:'', note:'', date:''} };
+const ui = { month: TODAY, sim: {}, bookSel: null, draft: {amount:'', note:'', date:''} };
 const P = () => docs.plan;
 const txKey = m => 'tx-' + m;
 const txList = m => (docs[txKey(m)] && docs[txKey(m)].items) || [];
@@ -389,6 +397,30 @@ function actual(m){
   txList(m).forEach(t => { byCat[t.c] = (byCat[t.c]||0) + t.a; bookedByCat[t.c] = (bookedByCat[t.c]||0) + t.a; booked += t.a; });
   return { byCat, bookedByCat, fixed, booked, total: fixed + booked };
 }
+/* --- individual budgets (variable items like "Tanken") --- */
+const budgets = () => P().items.filter(i => !i.fixed && i.kind !== 'save').sort((a,b) => monthly(b) - monthly(a));
+function periodMonths(rhythm, m){
+  const r = +rhythm || 1; const [y, mo] = m.split('-').map(Number); const start = Math.floor((mo-1)/r) * r;
+  return Array.from({length:r}, (_, i) => monthKey(new Date(y, start + i, 1)));
+}
+function periodLabel(rhythm, m){
+  const r = +rhythm || 1, y = m.slice(0,4), mo = +m.slice(5,7);
+  if(r === 1) return monthLabel(m);
+  if(r === 12) return 'Jahr ' + y;
+  if(r === 6) return (mo <= 6 ? '1.' : '2.') + ' Halbjahr ' + y;
+  return 'Q' + Math.ceil(mo/3) + ' ' + y;
+}
+function txBudgetId(t){
+  if(t.b) return t.b;
+  const vs = P().items.filter(i => !i.fixed && i.kind !== 'save' && i.cat === t.c);
+  return vs.length === 1 ? vs[0].id : null;
+}
+function budgetStatus(it, m){
+  const spent = sum(periodMonths(it.rhythm, m).flatMap(k => txList(k).filter(t => txBudgetId(t) === it.id).map(t => t.a)));
+  const total = +it.amount || 0;
+  return { total, spent, left: total - spent, ratio: total ? spent/total : 0, period: periodLabel(it.rhythm, m) };
+}
+function leftText(left){ return left < 0 ? '⚠︎ ' + eur(-left) + ' drüber' : 'noch ' + eur(left); }
 
 /* ---------- sample data ---------- */
 function sampleDocs(){
@@ -446,7 +478,7 @@ function onboarding(){
     <p class="ink2">Plane, wofür dein Geld jeden Monat da ist, buche deine Ausgaben und sieh sofort, wo du sparen kannst.</p>
     <ol class="steps">
       <li><b>Planen:</b> Einnahmen und Ausgaben eintragen – monatlich oder jährlich.</li>
-      <li><b>Buchen:</b> Variable Ausgaben (Einkauf, Tanken, Ausgehen) kurz erfassen. Fixkosten zählen automatisch.</li>
+      <li><b>Buchen:</b> Ausgaben (Einkauf, Tanken, Ausgehen) kurz erfassen – sie werden direkt vom jeweiligen Budget abgezogen. Fixkosten zählen automatisch.</li>
       <li><b>Sparen:</b> Hinweise, 50/30/20-Check und Spar-Simulator.</li>
     </ol>
     <div class="btnrow" style="margin-top:16px">
@@ -482,6 +514,7 @@ function vOverview(){
     ${kpi('Unverplant', eur0(c.free), c.free < 0 ? '⚠︎ mehr verplant als verdient' : 'noch frei pro Monat', c.free < 0 ? 'neg' : (c.free > 0 ? 'pos' : ''))}
   </div>`;
   if(!p.income.length) h += `<div class="banner">Trag unter <a href="#planen">Planen</a> noch deine Einnahmen ein, damit Quoten und Spar-Hinweise stimmen.</div>`;
+  h += budgetCards(true);
 
   // month status
   const isCur = ui.month === TODAY;
@@ -528,6 +561,18 @@ function vOverview(){
 
   h += history(c);
   return h;
+}
+
+function budgetCards(withTitle){
+  const bs = budgets();
+  if(!bs.length) return withTitle ? `<h2>Deine Budgets</h2><div class="card small muted">Noch keine Budgets. Leg unter <a href="#planen">Planen</a> einen variablen Posten an, z. B. „Tanken 80 €“. Was du dann buchst, wird davon abgezogen.</div>` : '';
+  return (withTitle ? `<h2>Deine Budgets <span class="small muted">· was noch übrig ist</span></h2>` : '') + `<div class="card">` + bs.map(it => {
+    const s = budgetStatus(it, ui.month), over = s.left < -0.005, cat = catById(it.cat);
+    return `<div class="bud" data-tip="${esc(it.name)}: ${eur(s.spent)} von ${eur(s.total)} ausgegeben (${esc(s.period)})">
+      <div class="top"><span class="n">${cat.icon} ${esc(it.name)}${+it.rhythm !== 1 ? ` <span class="small muted">· ${esc(s.period)}</span>` : ''}</span><b class="num ${over ? 'neg' : ''}">${leftText(s.left)}</b></div>
+      <div class="progress"><div class="${over ? 'over' : ''}" style="width:${Math.min(100, s.ratio*100)}%"></div></div>
+      <div class="small muted num">${eur(s.spent)} von ${eur(s.total)} ausgegeben</div></div>`;
+  }).join('') + `</div>`;
 }
 
 function history(c){
@@ -582,67 +627,93 @@ function vPlan(){
     const tot = sum(g.items.map(monthly));
     h += `<div class="card"><div class="cathead"><b>${g.cat.icon} ${esc(g.cat.name)}</b><span class="small ink2 num">${eur(tot)} / Monat${c.income ? ' · ' + pct(tot/c.income) : ''}</span></div>`;
     g.items.slice().sort((x,y) => monthly(y) - monthly(x)).forEach(i => {
-      h += `<button class="row" data-act="edit-item" data-id="${i.id}"><div class="main"><div class="name">${esc(i.name)}</div><div class="badges"><span class="badge"><i class="dot k-${i.kind}"></i>${KINDS[i.kind]}</span>${i.fixed ? '<span class="badge">Fix</span>' : '<span class="badge">Variabel</span>'}${i.rhythm != 1 ? `<span class="badge">${RHYTHMS[i.rhythm]}</span>` : ''}</div></div><div class="amt num">${eur(i.amount)}${i.rhythm != 1 ? `<div class="sub">= ${eur(monthly(i))} / Monat</div>` : ''}</div></button>`;
+      h += `<button class="row" data-act="edit-item" data-id="${i.id}"><div class="main"><div class="name">${esc(i.name)}</div><div class="badges"><span class="badge"><i class="dot k-${i.kind}"></i>${KINDS[i.kind]}</span>${i.fixed ? '<span class="badge">Fix</span>' : '<span class="badge">Variabel</span>'}${i.rhythm != 1 ? `<span class="badge">${RHYTHMS[i.rhythm]}</span>` : ''}</div></div><div class="amt num">${eur(i.amount)}${i.rhythm != 1 ? `<div class="sub">= ${eur(monthly(i))} / Monat</div>` : ''}${!i.fixed && i.kind !== 'save' ? (() => { const st = budgetStatus(i, TODAY); return `<div class="sub ${st.left < 0 ? 'neg' : ''}">${leftText(st.left)}</div>`; })() : ''}</div></button>`;
     });
     if(g.cat.id !== '_') h += `<button class="link addline" data-act="add-item" data-cat="${g.cat.id}">+ Posten in ${esc(g.cat.name)}</button>`;
     h += `</div>`;
   });
   h += `<div class="btnrow"><button class="btn" data-act="add-item">+ Ausgabe oder Sparbetrag</button><button class="btn ghost" data-act="cats">Kategorien verwalten</button></div>`;
-  h += `<p class="small muted" style="margin-top:14px"><b>Fix</b> = läuft automatisch ab (Miete, Abos, Sparplan) und zählt jeden Monat von selbst als ausgegeben. <b>Variabel</b> = buchst du unter „Buchen“, wenn du Geld ausgibst.</p>`;
+  h += `<p class="small muted" style="margin-top:14px"><b>Fix</b> = läuft automatisch ab (Miete, Abos, Sparplan) und zählt jeden Monat von selbst als ausgegeben. <b>Variabel</b> = ein Budget (z. B. Tanken 80 €): Was du unter „Buchen“ einträgst, wird davon abgezogen, und du siehst jederzeit, was noch übrig ist.</p>`;
   return h;
 }
 
 /* --- Buchen --- */
+// selection: 'b:<itemId>' = a budget, 'c:<catId>' = category without budget
+function selInfo(sel){
+  if(sel && sel.startsWith('b:')){ const it = P().items.find(i => i.id === sel.slice(2)); if(it && !it.fixed && it.kind !== 'save') return { b: it.id, c: it.cat, item: it, name: it.name }; }
+  if(sel && sel.startsWith('c:')){ const cat = catById(sel.slice(2)); return { c: cat.id, name: cat.name }; }
+  return null;
+}
 function vBook(){
-  const c = calc(), a = actual(ui.month);
-  const list = cats();
-  const withVar = list.filter(x => (c.varByCat[x.id]||0) > 0);
-  const rest = list.filter(x => !(c.varByCat[x.id] > 0));
-  const ordered = withVar.concat(rest);
-  if(!ui.bookCat || !list.some(x => x.id === ui.bookCat)) ui.bookCat = (ordered[0] || {}).id;
+  const a = actual(ui.month);
+  const bs = budgets();
+  const budgetCats = new Set(bs.map(b => b.cat));
+  if(!selInfo(ui.bookSel)) ui.bookSel = bs.length ? 'b:' + bs[0].id : 'c:' + (cats()[0] || {}).id;
   const defDate = ui.draft.date && ui.draft.date.startsWith(ui.month) ? ui.draft.date : (ui.month === TODAY ? todayISO() : ui.month + '-01');
   let h = monthNav();
   h += `<form class="card" id="bookform" style="margin-top:12px" autocomplete="off">
     <label class="f" for="b-amt" style="margin-top:0">Betrag</label>
     <input class="inp big num" id="b-amt" inputmode="decimal" placeholder="0,00 €" value="${esc(ui.draft.amount)}">
-    <label class="f">Kategorie</label>
-    <div class="chips">${ordered.map(x => { const left = (c.varByCat[x.id]||0) - (a.bookedByCat[x.id]||0); return `<button type="button" class="chip ${x.id === ui.bookCat ? 'on' : ''}" data-act="book-cat" data-id="${x.id}">${x.icon} ${esc(x.name)}${c.varByCat[x.id] > 0 ? ` <small>${left < 0 ? '⚠︎ ' : 'noch '}${eur0(left)}</small>` : ''}</button>`; }).join('')}</div>
+    <div class="preview" id="b-prev"></div>
+    <label class="f">Von welchem Budget?</label>
+    <div class="chips">
+      ${bs.map(it => { const s = budgetStatus(it, ui.month); return `<button type="button" class="chip ${ui.bookSel === 'b:' + it.id ? 'on' : ''}" data-act="book-sel" data-sel="b:${it.id}">${catById(it.cat).icon} ${esc(it.name)} <small>${s.left < 0 ? '⚠︎ ' + eur0(-s.left) + ' drüber' : 'noch ' + eur0(s.left)}</small></button>`; }).join('')}
+      ${bs.length ? '' : '<div class="small muted">Noch keine Budgets – leg unter „Planen“ variable Posten an (z. B. Tanken 80 €).</div>'}
+      <div class="chipsep">${bs.length ? 'Ohne Budget – nur Kategorie:' : 'Kategorie:'}</div>
+      ${cats().map(x => `<button type="button" class="chip ${ui.bookSel === 'c:' + x.id ? 'on' : ''}" data-act="book-sel" data-sel="c:${x.id}">${x.icon} ${esc(x.name)}</button>`).join('')}
+    </div>
     <div class="grid2">
-      <div><label class="f" for="b-note">Notiz (optional)</label><input class="inp" id="b-note" placeholder="z. B. Rewe" value="${esc(ui.draft.note)}"></div>
+      <div><label class="f" for="b-note">Notiz (optional)</label><input class="inp" id="b-note" placeholder="z. B. Aral" value="${esc(ui.draft.note)}"></div>
       <div><label class="f" for="b-date">Datum</label><input class="inp" type="date" id="b-date" value="${defDate}" min="${ui.month}-01" max="${ui.month}-${String(daysIn(ui.month)).padStart(2,'0')}"></div>
     </div>
     <button class="btn block" type="submit" style="margin-top:14px">Ausgabe buchen</button>
     <p class="small muted" style="margin:10px 0 0">Fixkosten wie Miete oder Abos musst du nicht buchen – sie zählen automatisch.</p>
   </form>`;
-  const items = txList(ui.month).slice().sort((x,y) => y.d.localeCompare(x.d) || 0);
+  h += budgetCards(true);
+  const items = txList(ui.month).slice().sort((x,y) => y.d.localeCompare(x.d));
   h += `<h2>Buchungen ${esc(monthLabel(ui.month))} <span class="muted small num">· ${eur(a.booked)}</span></h2>`;
   if(!items.length) h += `<div class="card small muted">Noch keine Buchungen in diesem Monat.</div>`;
   else {
     h += `<div class="card">`; let last = '';
     items.forEach(t => {
       if(t.d !== last){ h += `<div class="dayhead">${esc(dayLabel(t.d))}</div>`; last = t.d; }
-      const cat = catById(t.c);
-      h += `<button class="row" data-act="edit-tx" data-id="${t.id}"><span style="font-size:20px">${cat.icon}</span><div class="main"><div class="name">${esc(t.n || cat.name)}</div><div class="sub">${esc(cat.name)}</div></div><div class="amt num">${eur(t.a)}</div></button>`;
+      const cat = catById(t.c), bid = txBudgetId(t), it = bid && P().items.find(i => i.id === bid);
+      const label = it ? it.name : cat.name;
+      h += `<button class="row" data-act="edit-tx" data-id="${t.id}"><span style="font-size:20px">${cat.icon}</span><div class="main"><div class="name">${esc(t.n || label)}</div><div class="sub">${it ? 'Budget: ' + esc(it.name) : esc(cat.name) + ' · ohne Budget'}</div></div><div class="amt num">${eur(t.a)}</div></button>`;
     });
     h += `</div>`;
   }
   return h;
 }
+function updatePreview(){
+  const el = $('#b-prev'); if(!el) return;
+  const si = selInfo(ui.bookSel), a = parseAmount(($('#b-amt') || {}).value);
+  if(!si || !si.item){ el.innerHTML = ''; return; }
+  const s = budgetStatus(si.item, ui.month);
+  if(!(a > 0)){ el.innerHTML = `<span class="${s.left < 0 ? 'neg' : 'ink2'}">${esc(si.name)}: ${s.left < 0 ? '⚠︎ ' + eur(-s.left) + ' über Budget' : 'noch ' + eur(s.left) + ' übrig'}</span>`; return; }
+  const after = s.left - a;
+  el.innerHTML = `<span class="${after < 0 ? 'neg' : 'ink2'}">Danach bei ${esc(si.name)}: <b>${after < 0 ? '⚠︎ ' + eur(-after) + ' über Budget' : eur(after) + ' übrig'}</b></span>`;
+}
 function afterBook(){
   const f = $('#bookform'); if(!f) return;
-  ['b-amt','b-note','b-date'].forEach(id => { const el = $('#' + id); el.addEventListener('input', () => { ui.draft[{'b-amt':'amount','b-note':'note','b-date':'date'}[id]] = el.value; }); });
+  ['b-amt','b-note','b-date'].forEach(id => { const el = $('#' + id); el.addEventListener('input', () => { ui.draft[{'b-amt':'amount','b-note':'note','b-date':'date'}[id]] = el.value; if(id === 'b-amt') updatePreview(); }); });
+  updatePreview();
   f.addEventListener('submit', e => {
     e.preventDefault();
     const a = parseAmount($('#b-amt').value);
     if(!(a > 0)){ toast('Bitte einen Betrag eingeben.'); $('#b-amt').focus(); return; }
     let d = $('#b-date').value || todayISO();
     if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) d = todayISO();
-    const m = d.slice(0,7), cat = catById(ui.bookCat);
-    change(txKey(m), doc => doc.items.push({ id:newId(), d, a, c: ui.bookCat, n: $('#b-note').value.trim().slice(0,80) }));
+    const m = d.slice(0,7), si = selInfo(ui.bookSel);
+    if(!si){ toast('Bitte ein Budget oder eine Kategorie wählen.'); return; }
+    const tx = { id:newId(), d, a, c: si.c, n: $('#b-note').value.trim().slice(0,80) };
+    if(si.b) tx.b = si.b;
+    change(txKey(m), doc => doc.items.push(tx));
     ui.draft = { amount:'', note:'', date: d };
     if(m !== ui.month){ ui.month = m; }
     render();
-    toast('Gebucht: ' + eur(a) + ' · ' + cat.name);
+    if(si.item){ const s = budgetStatus(si.item, m); toast(`${eur(a)} gebucht · ${si.name}: ${s.left < 0 ? '⚠︎ ' + eur(-s.left) + ' über Budget' : 'noch ' + eur(s.left) + ' übrig'}`, 3500); }
+    else toast('Gebucht: ' + eur(a) + ' · ' + si.name);
     const amt = $('#b-amt'); if(amt) amt.focus();
   });
 }
@@ -817,7 +888,7 @@ function itemForm(id, presetCat){
     <label class="f" for="f-cat">Kategorie</label>${catSelect(cat)}
     <label class="f">Art</label>
     <div class="segctl">${Object.entries(KINDS).map(([k,v]) => `<label><input type="radio" name="f-kind" value="${k}" ${k === kind ? 'checked' : ''}><i class="dot k-${k}"></i>${v}</label>`).join('')}</div>
-    <label class="check"><input type="checkbox" id="f-fix" ${fixed ? 'checked' : ''}><span><b>Fixkosten / Dauerauftrag</b><br><span class="small muted">Läuft automatisch ab und zählt jeden Monat von selbst als ausgegeben. Aus = variabel, du buchst die Ausgaben selbst.</span></span></label>`,
+    <label class="check"><input type="checkbox" id="f-fix" ${fixed ? 'checked' : ''}><span><b>Fixkosten / Dauerauftrag</b><br><span class="small muted">Läuft automatisch ab und zählt jeden Monat von selbst als ausgegeben. Aus = Budget: Was du unter „Buchen“ einträgst, wird davon abgezogen.</span></span></label>`,
     `${it ? '<button class="btn danger" data-del>Löschen</button><span class="spacer"></span>' : ''}<button class="btn" data-save>Speichern</button>`, m => {
       bindCatSelect(m);
       const upd = () => { const a = parseAmount(m.querySelector('#f-amt').value), r = +m.querySelector('#f-rh').value; m.querySelector('#f-mon').textContent = a > 0 && r !== 1 ? '= ' + eur(a/r) + ' pro Monat' : ''; };
@@ -852,7 +923,7 @@ function txForm(id){
   openModal('Buchung bearbeiten', `
     <div class="grid2"><div><label class="f" for="f-amt">Betrag</label><input class="inp num" id="f-amt" inputmode="decimal" value="${esc(amtStr(t.a))}"></div>
     <div><label class="f" for="f-date">Datum</label><input class="inp" type="date" id="f-date" value="${t.d}"></div></div>
-    <label class="f" for="f-cat">Kategorie</label><select class="inp" id="f-cat">${cats().map(c => `<option value="${c.id}" ${c.id === t.c ? 'selected' : ''}>${c.icon} ${esc(c.name)}</option>`).join('')}</select>
+    <label class="f" for="f-cat">Budget / Kategorie</label><select class="inp" id="f-cat">${(() => { const cur = txBudgetId(t) && budgets().some(b => b.id === txBudgetId(t)) ? 'b:' + txBudgetId(t) : 'c:' + t.c; return (budgets().length ? `<optgroup label="Budgets">${budgets().map(b => `<option value="b:${b.id}" ${cur === 'b:' + b.id ? 'selected' : ''}>${catById(b.cat).icon} ${esc(b.name)}</option>`).join('')}</optgroup>` : '') + `<optgroup label="Ohne Budget – Kategorie">${cats().map(c => `<option value="c:${c.id}" ${cur === 'c:' + c.id ? 'selected' : ''}>${c.icon} ${esc(c.name)}</option>`).join('')}</optgroup>`; })()}</select>
     <label class="f" for="f-note">Notiz</label><input class="inp" id="f-note" maxlength="80" value="${esc(t.n || '')}">`,
     `<button class="btn danger" data-del>Löschen</button><span class="spacer"></span><button class="btn" data-save>Speichern</button>`, m => {
       m.querySelector('[data-save]').onclick = () => {
@@ -860,7 +931,9 @@ function txForm(id){
         if(!(a > 0)){ toast('Bitte einen gültigen Betrag eingeben.'); return; }
         let d = m.querySelector('#f-date').value; if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) d = t.d;
         const nk = txKey(d.slice(0,7));
-        const upd = { id, d, a, c: m.querySelector('#f-cat').value, n: m.querySelector('#f-note').value.trim().slice(0,80) };
+        const si = selInfo(m.querySelector('#f-cat').value) || { c: t.c };
+        const upd = { id, d, a, c: si.c, n: m.querySelector('#f-note').value.trim().slice(0,80) };
+        if(si.b) upd.b = si.b;
         if(nk === oldKey) change(oldKey, doc => { const i = doc.items.findIndex(x => x.id === id); if(i >= 0) doc.items[i] = upd; });
         else { change(oldKey, doc => { doc.items = doc.items.filter(x => x.id !== id); }); change(nk, doc => doc.items.push(upd)); }
         modalClose();
@@ -973,7 +1046,7 @@ const ACTIONS = {
   'add-item': el => itemForm(null, el.dataset.cat),
   'edit-item': el => itemForm(el.dataset.id),
   'edit-tx': el => txForm(el.dataset.id),
-  'book-cat': el => { ui.bookCat = el.dataset.id; document.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c.dataset.id === ui.bookCat)); },
+  'book-sel': el => { ui.bookSel = el.dataset.sel; document.querySelectorAll('[data-act=book-sel]').forEach(c => c.classList.toggle('on', c.dataset.sel === ui.bookSel)); updatePreview(); },
   'cats': () => catsForm(),
   'settings': () => settingsForm(),
   'sim-reset': () => { ui.sim = {}; render(); },
